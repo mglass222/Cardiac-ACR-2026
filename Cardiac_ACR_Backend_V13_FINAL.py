@@ -1,15 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
-
-
-from IPython.display import display, HTML
-display(HTML("<style>.container { width:100% !important; }</style>"))  
-
 
 # In[2]:
-
 
 # import project modules ###
 
@@ -27,7 +20,6 @@ import filter_patches
 import filter_tiles
 import cardiac_utils as utils
 import count_1r2
-import count_1r2_testing
 import annotate_svs
 import annotate_png
 
@@ -197,8 +189,6 @@ def classify_patches_batch(slide_number):
 
 
 def Model_Predict_batch(batch, model):
-
-    from torchvision import transforms
 
     # Imagenet Standards
     mean = [0.485, 0.456, 0.406]
