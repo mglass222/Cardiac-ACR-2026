@@ -3,7 +3,7 @@
 ## Date: 2026-03-28 (updated after cleanup)
 
 ## Entry Point
-`Cardiac_ACR_Backend_V13_FINAL.py`
+`cardiac_acr_pipeline.py`
 
 ---
 
