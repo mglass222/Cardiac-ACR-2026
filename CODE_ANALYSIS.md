@@ -3,7 +3,7 @@
 ## Date: 2026-03-28 (updated after cleanup)
 
 ## Entry Point
-`cardiac_acr_pipeline.py`
+`cardiac_acr_diagnose_wsi.py`
 
 ---
 
