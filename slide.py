@@ -18,9 +18,7 @@ import cardiac_globals as cg
 import os
 import glob
 import math
-import matplotlib.pyplot as plt
 import multiprocessing
-import numpy as np
 
 # import openslide
 # import import_openslide
@@ -33,10 +31,8 @@ from openslide import OpenSlideError
 import PIL
 from PIL import Image
 import re
-import sys
 import util
 from util import Time
-from os import listdir
 
 ############################################
 
@@ -183,26 +179,6 @@ def get_tile_image_path(tile):
                            TRAIN_PREFIX + padded_sl_num + "-" + TILE_SUFFIX + "-r%d-c%d-x%d-y%d-w%d-h%d" % (
                              t.r, t.c, t.o_c_s, t.o_r_s, t.o_c_e - t.o_c_s, t.o_r_e - t.o_r_s) + "." + DEST_TRAIN_EXT)
   return tile_path
-
-
-def get_tile_image_path_by_slide_row_col(slide_number, row, col):
-  """
-  Obtain tile image path using wildcard lookup with slide number, row, and column.
-
-  Args:
-    slide_number: The slide number.
-    row: The row.
-    col: The column.
-
-  Returns:
-    Path to image tile.
-  """
-  padded_sl_num = str(slide_number).zfill(3)
-  wilcard_path = os.path.join(TILE_DIR, padded_sl_num,
-                              TRAIN_PREFIX + padded_sl_num + "-" + TILE_SUFFIX + "-r%d-c%d-*." % (
-                                row, col) + DEST_TRAIN_EXT)
-  img_path = glob.glob(wilcard_path)[0]
-  return img_path
 
 
 def get_training_image_path(slide_number, large_w=None, large_h=None, small_w=None, small_h=None):
@@ -730,17 +706,6 @@ def slide_to_scaled_np_image(slide_number):
   return np_img, large_w, large_h, new_w, new_h
 
 
-def show_slide(slide_number):
-  """
-  Display a WSI slide on the screen, where the slide has been scaled down and converted to a PIL image.
-
-  Args:
-    slide_number: The slide number.
-  """
-  pil_img = slide_to_scaled_pil_image(slide_number)[0]
-  pil_img.show()
-
-
 def save_thumbnail(pil_img, size, path, display_path=False):
   """
   Save a thumbnail of a PIL image, specifying the maximum width or height of the thumbnail.
@@ -791,60 +756,6 @@ def training_slide_list_to_images(image_num_list):
   return image_num_list
 
 
-def training_slide_range_to_images(start_ind, end_ind):
-  """
-  Convert a range of WSI training slides to smaller images (in a format such as jpg or png).
-
-  Args:
-    start_ind: Starting index (inclusive).
-    end_ind: Ending index (inclusive).
-
-  Returns:
-    The starting index and the ending index of the slides that were converted.
-  """
-
-  # slides = listdir(SRC_TRAIN_DIR)
-
-  # # get rid of the .svs and make integer
-  # for i in range(len(slides)):
-  #   item = slides[i]
-  #   item = item.replace(".svs", "")
-  #   item = int(item)
-  #   slides[i] = item
-
-
-  for slide_num in range(start_ind, end_ind + 1):
-
-    training_slide_to_image(slide_num)
-    
-  return (start_ind, end_ind)
-
-
-  # for slide_num in range(start_ind, end_ind + 1):
-
-  #   training_slide_to_image(slides[slide_num - 1])
-
-  # return (start_ind, end_ind)
-
-
-def singleprocess_training_slides_to_images(image_num_list=None):
-  """
-  Convert all WSI training slides to smaller images using a single process.
-  """
-  t = Time()
-
-  num_train_images = get_num_training_slides()
-  print("num images = ", num_train_images)
-
-  if image_num_list is not None:
-    training_slide_list_to_images(image_num_list)
-  else:
-    training_slide_range_to_images(1, num_train_images)
-
-  t.elapsed_display()
-
-
-
 def multiprocess_training_slides_to_images(image_num_list=None):
   """
   Convert all WSI training slides to smaller images using multiple processes (one process per core).
@@ -882,239 +793,20 @@ def multiprocess_training_slides_to_images(image_num_list=None):
       sublist = image_num_list[start_index - 1:end_index]
       tasks.append([sublist])
       print("Task #" + str(num_process) + ": Process slides " + str(sublist))
-    else:  
-      tasks.append((start_index, end_index))
-      if start_index == end_index:
-        print("Task #" + str(num_process) + ": Process slide " + str(start_index))
-      else:
-        print("Task #" + str(num_process) + ": Process slides " + str(start_index) + " to " + str(end_index))
-
   # start tasks
 
   results = []
   for t in tasks:
-    if image_num_list is not None:
-      results.append(pool.apply_async(training_slide_list_to_images, t))
-    else:
-      results.append(pool.apply_async(training_slide_range_to_images, t))
+    results.append(pool.apply_async(training_slide_list_to_images, t))
 
   for result in results:
-    if image_num_list is not None:
-      image_nums = result.get()
-      print("Done converting slides: %s" % image_nums)
-    else:  
-      (start_ind, end_ind) = result.get()
-      if start_ind == end_ind:
-        print("Done converting slide %d" % start_ind)
-      else:
-        print("Done converting slides %d through %d" % (start_ind, end_ind))
+    image_nums = result.get()
+    print("Done converting slides: %s" % image_nums)
 
   timer.elapsed_display()
 
   pool.close()
   pool.join()
 
-def slide_stats():
-  """
-  Display statistics/graphs about training slides.
-  """
-  t = Time()
-
-  if not os.path.exists(STATS_DIR):
-    os.makedirs(STATS_DIR)
-
-  num_train_images = get_num_training_slides()
-  slide_stats = []
-  for slide_num in range(1, num_train_images + 1):
-    slide_filepath = get_training_slide_path(slide_num)
-    print("Opening Slide #%d: %s" % (slide_num, slide_filepath))
-    slide = open_slide(slide_filepath)
-    (width, height) = slide.dimensions
-    print("  Dimensions: {:,d} x {:,d}".format(width, height))
-    slide_stats.append((width, height))
-
-  max_width = 0
-  max_height = 0
-  min_width = sys.maxsize
-  min_height = sys.maxsize
-  total_width = 0
-  total_height = 0
-  total_size = 0
-  which_max_width = 0
-  which_max_height = 0
-  which_min_width = 0
-  which_min_height = 0
-  max_size = 0
-  min_size = sys.maxsize
-  which_max_size = 0
-  which_min_size = 0
-  for z in range(0, num_train_images):
-    (width, height) = slide_stats[z]
-    if width > max_width:
-      max_width = width
-      which_max_width = z + 1
-    if width < min_width:
-      min_width = width
-      which_min_width = z + 1
-    if height > max_height:
-      max_height = height
-      which_max_height = z + 1
-    if height < min_height:
-      min_height = height
-      which_min_height = z + 1
-    size = width * height
-    if size > max_size:
-      max_size = size
-      which_max_size = z + 1
-    if size < min_size:
-      min_size = size
-      which_min_size = z + 1
-    total_width = total_width + width
-    total_height = total_height + height
-    total_size = total_size + size
-
-  avg_width = total_width / num_train_images
-  avg_height = total_height / num_train_images
-  avg_size = total_size / num_train_images
-
-  stats_string = ""
-  stats_string += "%-11s {:14,d} pixels (slide #%d)".format(max_width) % ("Max width:", which_max_width)
-  stats_string += "\n%-11s {:14,d} pixels (slide #%d)".format(max_height) % ("Max height:", which_max_height)
-  stats_string += "\n%-11s {:14,d} pixels (slide #%d)".format(max_size) % ("Max size:", which_max_size)
-  stats_string += "\n%-11s {:14,d} pixels (slide #%d)".format(min_width) % ("Min width:", which_min_width)
-  stats_string += "\n%-11s {:14,d} pixels (slide #%d)".format(min_height) % ("Min height:", which_min_height)
-  stats_string += "\n%-11s {:14,d} pixels (slide #%d)".format(min_size) % ("Min size:", which_min_size)
-  stats_string += "\n%-11s {:14,d} pixels".format(round(avg_width)) % "Avg width:"
-  stats_string += "\n%-11s {:14,d} pixels".format(round(avg_height)) % "Avg height:"
-  stats_string += "\n%-11s {:14,d} pixels".format(round(avg_size)) % "Avg size:"
-  stats_string += "\n"
-  print(stats_string)
-
-  stats_string += "\nslide number,width,height"
-  for i in range(0, len(slide_stats)):
-    (width, height) = slide_stats[i]
-    stats_string += "\n%d,%d,%d" % (i + 1, width, height)
-  stats_string += "\n"
-
-  stats_file = open(os.path.join(STATS_DIR, "stats.txt"), "w")
-  stats_file.write(stats_string)
-  stats_file.close()
-
-  t.elapsed_display()
-
-  x, y = zip(*slide_stats)
-  colors = np.random.rand(num_train_images)
-  sizes = [10 for n in range(num_train_images)]
-  plt.scatter(x, y, s=sizes, c=colors, alpha=0.7)
-  plt.xlabel("width (pixels)")
-  plt.ylabel("height (pixels)")
-  plt.title("SVS Image Sizes")
-  plt.set_cmap("prism")
-  plt.tight_layout()
-  plt.savefig(os.path.join(STATS_DIR, "svs-image-sizes.png"))
-  plt.show()
-
-  plt.clf()
-  plt.scatter(x, y, s=sizes, c=colors, alpha=0.7)
-  plt.xlabel("width (pixels)")
-  plt.ylabel("height (pixels)")
-  plt.title("SVS Image Sizes (Labeled with slide numbers)")
-  plt.set_cmap("prism")
-  for i in range(num_train_images):
-    snum = i + 1
-    plt.annotate(str(snum), (x[i], y[i]))
-  plt.tight_layout()
-  plt.savefig(os.path.join(STATS_DIR, "svs-image-sizes-slide-numbers.png"))
-  plt.show()
-
-  plt.clf()
-  area = [w * h / 1000000 for (w, h) in slide_stats]
-  plt.hist(area, bins=64)
-  plt.xlabel("width x height (M of pixels)")
-  plt.ylabel("# images")
-  plt.title("Distribution of image sizes in millions of pixels")
-  plt.tight_layout()
-  plt.savefig(os.path.join(STATS_DIR, "distribution-of-svs-image-sizes.png"))
-  plt.show()
-
-  plt.clf()
-  whratio = [w / h for (w, h) in slide_stats]
-  plt.hist(whratio, bins=64)
-  plt.xlabel("width to height ratio")
-  plt.ylabel("# images")
-  plt.title("Image shapes (width to height)")
-  plt.tight_layout()
-  plt.savefig(os.path.join(STATS_DIR, "w-to-h.png"))
-  plt.show()
-
-  plt.clf()
-  hwratio = [h / w for (w, h) in slide_stats]
-  plt.hist(hwratio, bins=64)
-  plt.xlabel("height to width ratio")
-  plt.ylabel("# images")
-  plt.title("Image shapes (height to width)")
-  plt.tight_layout()
-  plt.savefig(os.path.join(STATS_DIR, "h-to-w.png"))
-  plt.show()
-
-
-def slide_info(display_all_properties=False):
-  """
-  Display information (such as properties) about training images.
-
-  Args:
-    display_all_properties: If True, display all available slide properties.
-  """
-  t = Time()
-
-  num_train_images = get_num_training_slides()
-  obj_pow_20_list = []
-  obj_pow_40_list = []
-  obj_pow_other_list = []
-  for slide_num in range(1, num_train_images + 1):
-    slide_filepath = get_training_slide_path(slide_num)
-    print("\nOpening Slide #%d: %s" % (slide_num, slide_filepath))
-    slide = open_slide(slide_filepath)
-    print("Level count: %d" % slide.level_count)
-    print("Level dimensions: " + str(slide.level_dimensions))
-    print("Level downsamples: " + str(slide.level_downsamples))
-    print("Dimensions: " + str(slide.dimensions))
-    objective_power = int(slide.properties[openslide.PROPERTY_NAME_OBJECTIVE_POWER])
-    print("Objective power: " + str(objective_power))
-    if objective_power == 20:
-      obj_pow_20_list.append(slide_num)
-    elif objective_power == 40:
-      obj_pow_40_list.append(slide_num)
-    else:
-      obj_pow_other_list.append(slide_num)
-    print("Associated images:")
-    for ai_key in slide.associated_images.keys():
-      print("  " + str(ai_key) + ": " + str(slide.associated_images.get(ai_key)))
-    print("Format: " + str(slide.detect_format(slide_filepath)))
-    if display_all_properties:
-      print("Properties:")
-      for prop_key in slide.properties.keys():
-        print("  Property: " + str(prop_key) + ", value: " + str(slide.properties.get(prop_key)))
-
-  print("\n\nSlide Magnifications:")
-  print("  20x Slides: " + str(obj_pow_20_list))
-  print("  40x Slides: " + str(obj_pow_40_list))
-  print("  ??x Slides: " + str(obj_pow_other_list) + "\n")
-
-  t.elapsed_display()
-
-
 if __name__ == "__main__":
-   # show_slide(2)
-   # slide_info(display_all_properties=True)
-   # slide_stats()
-
-   # training_slide_to_image(4)
-   # img_path = get_training_image_path(4)
-   # img = open_image(img_path)
-   # img.show()
-
-   # slide_to_scaled_pil_image(5)[0].show()
-   # singleprocess_training_slides_to_images()
-
    multiprocess_training_slides_to_images()

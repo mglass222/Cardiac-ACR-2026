@@ -217,35 +217,6 @@ def apply_filters_to_image(image, save_dir, save, display=False):
   return filtered_np_img
 
 
-def apply_filters_to_image_list(image_list, save_dir, save, display):
-  """
-  Apply filters to a list of images.
-
-  Args:
-    image_num_list: List of image numbers.
-    save: If True, save filtered images.
-    display: If True, display filtered images to screen.
-
-  Returns:
-    Tuple consisting of 1) a list of image numbers, and 2) a dictionary of image filter information.
-  """
-  # html_page_info = dict()
-
-  tissue_percent_dict = {}
-
-  for image in image_list:
-
-    filtered_np_image = apply_filters_to_image(image, save_dir, save, display=display)
-
-    tissue_percentage = tissue_percent(filtered_np_image)
-
-    tissue_percent_dict.update({image:tissue_percentage})
-   
-  return image_list, tissue_percent_dict
-    
-  # return image_num_list
-
-
 def apply_filters_to_image_list_multiprocess(image_list, save_dir, save, display):
   """
   Apply filters to a list of images.
@@ -347,44 +318,4 @@ def multiprocess_apply_filters_to_images(folder, save=False, display=False, html
   pool.close()
   pool.join()
 
-  return tissue_percent_dict
-
-
-	
-def singleprocess_apply_filters_to_images(folder, save=True, display=False, html=False, image_num_list=None):
-  """
-  Apply a set of filters to training images and optionally save and/or display the filtered images.
-
-  Args:
-    save: If True, save filtered images.
-    display: If True, display filtered images to screen.
-    html: If True, generate HTML page to display filtered images.
-    image_num_list: Optionally specify a list of image slide numbers.
-  """
-  t = Time()
-
-  print("Applying filters to images\n")
-
-  split_tiles_dir = cg.SPLIT_TILE_DIR + str(folder) + "\\"
-  # print("split_tiles_dir = ", split_tiles_dir,  "\n")
-
-  save_dir = cg.TISSUE_PERCENT_DIR + str(folder) + "\\filtered\\"
-  # print("save_dir = ", save_dir, "\n")
-
-  if save and not os.path.exists(save_dir):
-    os.makedirs(save_dir)
-
-  image_list = os.listdir(split_tiles_dir)  
-
-  for i in range(len(image_list)):
-    image = split_tiles_dir + image_list[i]
-    image_list[i] = image
-
-  # print("Image list = ", image_list)
-
-  if image_list is not None:
-    tissue_percent_dict = apply_filters_to_image_list(image_list, save_dir, save, display)
-    print("Done filtering images: " , image_list)
-
-  # print("Time to apply filters to all images: %s\n" % str(t.elapsed()))
   return tissue_percent_dict

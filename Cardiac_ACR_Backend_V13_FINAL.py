@@ -1,12 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-
-# In[2]:
-
 # import project modules ###
 
-import sys  
+import sys
 py_path = "D:\\Cardiac_ACR\\Py_Files\\"
 sys.path.insert(0, py_path)
 
@@ -17,7 +14,6 @@ import slide
 import tiles
 import tileset_utils
 import filter_patches
-import filter_tiles
 import cardiac_utils as utils
 import count_1r2
 import annotate_svs
@@ -29,11 +25,7 @@ import import_openslide
 # Import System Modules, etc.
 import os
 from os import listdir
-from os.path import isfile, isdir, join
-import xml.etree.ElementTree as ET
-import pickle
-import shutil
-import multiprocessing
+from os.path import isfile
 
 import torch
 import torchvision
@@ -41,14 +33,9 @@ from torch import optim, cuda
 from torchvision import datasets, models, transforms
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 import time
-
-from datetime import datetime
-import re
-
-import cv2
-import matplotlib.pyplot as plt
+import pickle
 
 # size that nn is expecting
 INPUT_SIZE = cg.ANNOTATION_SIZE
@@ -72,29 +59,14 @@ SLIDE_DX_DIR = cg.SLIDE_DX_DIR
 FILTERED_IMAGE_DIR = cg.FILTERED_IMAGE_DIR
 
 
-### Directories to display tissue percent on tiles and patches ###
-TISSUE_PERCENT_DIR = cg.TISSUE_PERCENT_DIR
-
-## Font path for displaying tissue percentage on images ###
-FONT_PATH = cg.FONT_PATH
-
-plt.rcParams['figure.figsize'] = [20, 15]
-
-
-# In[3]:
-
-
 def check_filesystem():
 
     for path in [MODEL_DIR,SAVED_DATABASE_DIR,SLIDE_DX_DIR]:
         if not os.path.exists(path):
             os.makedirs(path)
-            
+
     for path in [MODEL_DIR,SAVED_DATABASE_DIR,SLIDE_DX_DIR]:
         print(path)
-
-
-# In[4]:
 
 
 def filter_patches_multiprocess(slide_number):
@@ -102,14 +74,11 @@ def filter_patches_multiprocess(slide_number):
     # permanently delete patches that dont contain at least 50 % tissue (mostly white space)
 
     tissue_percent_dict = filter_patches.multiprocess_apply_filters_to_images(slide_number, save=False)
-       
+
     for key, value in tissue_percent_dict.items():
         if int(value) < 50:
             if isfile(key):
                 os.remove(key)
-
-
-# In[5]:
 
 
 def classify_patches_batch(slide_number):
@@ -120,7 +89,7 @@ def classify_patches_batch(slide_number):
     batch_size = 200
     patch_dir = SPLIT_TILE_DIR + str(slide_number) + "\\"
     patches = [patch_dir + patch for patch in listdir(patch_dir)]
-    
+
     num_patches = len(patches)
     num_batches = int(num_patches / batch_size)
     last_batch = num_patches - batch_size * num_batches
@@ -146,7 +115,6 @@ def classify_patches_batch(slide_number):
 
         elif i == num_batches:
             batch_size = last_batch
-#             print("LAST BATCH")
             print("Batch_size = ", batch_size)
 
         for j in range(batch_size):
@@ -160,9 +128,6 @@ def classify_patches_batch(slide_number):
             batch.append(image)
             #update iterator
             count += 1
-
-#         if (i % 10 == 0):
-#             print(f"Processed {i} out of {num_batches} batches")
 
         # Classify images in the batch
         preds = Model_Predict_batch(batch, model)
@@ -183,9 +148,6 @@ def classify_patches_batch(slide_number):
         pickle.dump(model_predictions_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     print(f"Done with predictions. this took {time.time() - t} seconds")
-
-
-# In[6]:
 
 
 def Model_Predict_batch(batch, model):
@@ -210,15 +172,12 @@ def Model_Predict_batch(batch, model):
     batch_tensor = torch.stack(batch_t)
     model.batch_size = len(batch_tensor)
     batch_tensor = batch_tensor.to(device)
-    
+
     #disable autograd engine
     with torch.no_grad():
         predictions = model(batch_tensor)
-        
+
     return predictions
-
-
-# In[7]:
 
 
 def threshold_predictions(slide_number):
@@ -235,10 +194,6 @@ def threshold_predictions(slide_number):
         # get rid of predictions below threshold
         pred_mask = np.asarray(value) > PREDICTION_THRESHOLD
         if True in pred_mask:
-            # get the class prediction 
-            # class_prediction = np.argmax(value)
-            # filtered_dict.update({key:class_prediction})
-            
             filtered_dict.update({key:value})
 
 
@@ -256,11 +211,8 @@ def threshold_predictions(slide_number):
     utils.model_prediction_dict_to_csv(slide_number)
 
 
-# In[8]:
-
-
 def diagnose(slide_number):
-    
+
     filename = "model_predictions_dict_" + str(slide_number) + "_filtered.pickle"
 
     # Load predictions
@@ -275,7 +227,7 @@ def diagnose(slide_number):
              slide_dx_dict = pickle.load(handle)
     else:
         slide_dx_dict = {}
-    
+
     _1R1A_count = 0
     _1R2_count = 0
     healing_count = 0
@@ -286,10 +238,10 @@ def diagnose(slide_number):
     class_count = {"1R1A":0, "1R2":0, "Healing":0, "Hemorrhage":0, "Normal":0, "Quilty":0}
 
     for k, v in filtered_predictions.items():
-        
-        # get the class prediction 
+
+        # get the class prediction
         value = np.argmax(v)
-    
+
         # 1R1A
         if value == 0:
             _1R1A_count += 1
@@ -305,7 +257,7 @@ def diagnose(slide_number):
         elif value == 3:
             hemorrhage_count += 1
             class_count.update({"Normal":normal_count})
-        # Normal  
+        # Normal
         elif value == 4:
             normal_count += 1
             class_count.update({"Quilty":quilty_count})
@@ -313,18 +265,18 @@ def diagnose(slide_number):
         elif value == 5:
             quilty_count += 1
             class_count.update({"Quilty":quilty_count})
-            
-            
+
+
     # call special 1r2 count function
     _1R2_count = count_1r2.main(slide_number)
 
-    
+
     class_count.update({"1R2":_1R2_count})
     print("class_counts = ", class_count)
-    
+
     ########## Diagnose the slide #########
     dx = ""
-     
+
     if _1R1A_count == 0  and _1R2_count == 0:
         dx = dx + "0R"
     elif _1R1A_count > 0 and _1R2_count == 0:
@@ -335,7 +287,7 @@ def diagnose(slide_number):
         else :
             dx = dx + "2R"
     ########################################
-    
+
     print(f"Slide Diagnosis = {dx}")
 
     slide_dx_dict.update({slide_number:dx})
@@ -346,54 +298,45 @@ def diagnose(slide_number):
     # Save diagnoses
     with open(SLIDE_DX_DIR + save_name, 'wb') as handle:
         pickle.dump(slide_dx_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    
+
     utils.slide_dx_to_csv(slide_dx_dict, save_name)
-
-
-# In[9]:
 
 
 def display_results(slides_to_process):
 
     open_name = open_name = "slide_dx_dict_" + str(int(PREDICTION_THRESHOLD*100)) + "% confidence.pickle"
-    
+
     with open(SLIDE_DX_DIR + open_name, 'rb') as handle:
         slide_dx_dict = pickle.load(handle)
-    
+
     ###### get rid of entries from deleted slides ######
     slide_dx_dict_copy = slide_dx_dict.copy()
-    
+
     for key, value in slide_dx_dict.items():
         if key not in slides_to_process:
             del  slide_dx_dict_copy[key]
-            
+
     slide_dx_dict = slide_dx_dict_copy
     #######################################################
 
-    for key, value in slide_dx_dict.items():    
-        # print(key, value)
+    for key, value in slide_dx_dict.items():
         print(value)
 
 
-# In[10]:
-
-
 def main():
-    
+
     t = time.time()
 
-    # slides_to_process = utils.get_test_slide_numbers()
-
-    slides_to_process = [111]
+    slides_to_process = utils.get_test_slide_numbers()
 
     print(slides_to_process)
 
     """ leave these out of the main program loop for multiprocessing at the slide level """
-    slide.multiprocess_training_slides_to_images(image_num_list=slides_to_process) 
+    slide.multiprocess_training_slides_to_images(image_num_list=slides_to_process)
     filter.multiprocess_apply_filters_to_images(image_num_list=slides_to_process)
     tiles.multiprocess_filtered_images_to_tiles(save_top_tiles=False, image_num_list=slides_to_process)
 
-    
+
     print(f"\nTime to extract training image, apply filters, and make tiles {time.time()-t}")
 
 
@@ -401,27 +344,22 @@ def main():
 
         loop_timer = time.time()
         slide_number = folder
-        
+
 
         print(f"\nStarting slide number {slide_number}")
 
         tileset_utils.process_tilesets_multiprocess(slide_number)
         filter_patches_multiprocess(slide_number)
-        # classify_patches_batch(slide_number)
-        # threshold_predictions(slide_number)
-        # diagnose(slide_number)
-        # annotate_png.main(slide_number)
-        # annotate_svs.main(slide_number)
+        classify_patches_batch(slide_number)
+        threshold_predictions(slide_number)
+        diagnose(slide_number)
+        annotate_png.main(slide_number)
+        annotate_svs.main(slide_number)
 
         print(f"\nDone processing slide {slide_number}. processing time: {time.time() - loop_timer}\n")
 
     print(f"Total processing time for all slides: {time.time() - t}")
     display_results(slides_to_process)
-
-    
-
-
-# In[11]:
 
 
 # check that all directories exists
@@ -442,11 +380,3 @@ model = model.to(device)
 model.eval()
 
 if __name__ == "__main__": main()
-    
-
-
-# In[ ]:
-
-
-
-
