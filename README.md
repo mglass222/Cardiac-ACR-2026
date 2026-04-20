@@ -159,11 +159,14 @@ Cardiac-ACR-Opus46/
 │       └── test_set_stats.py         Slide-level threshold-grid + 2R ROC + 4-class
 │
 ├── data/                             All input/output data (not tracked in git)
+├── docs/                             Planning notes, traces, and development docs
 ├── fonts/                            Font files for tile visualizations
 ├── .gitignore
-├── README.md
-└── DEVELOPMENT_LOG.md                Code trace, cleanup history, and refactor notes
+└── README.md
 ```
+
+Project notes and internal references now live under `docs/` so the
+repository root stays focused on source, data, and the primary readme.
 
 ## Training and Statistics
 

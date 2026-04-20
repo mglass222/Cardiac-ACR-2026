@@ -2,11 +2,11 @@
 
 ## Context
 
-The Cardiac-ACR codebase has accumulated dead code over time — unused files, commented-out code paths, orphaned functions, and unnecessary imports. A full code trace (documented in `DEVELOPMENT_LOG.md`) identified ~69 unused functions across active files, 7 entirely removable files, and numerous unused imports. This cleanup removes dead code to improve maintainability and clarity without affecting any active functionality.
+The Cardiac-ACR codebase has accumulated dead code over time — unused files, commented-out code paths, orphaned functions, and unnecessary imports. A full code trace (documented in `docs/DEVELOPMENT_LOG.md`) identified ~69 unused functions across active files, 7 entirely removable files, and numerous unused imports. This cleanup removes dead code to improve maintainability and clarity without affecting any active functionality.
 
 ## Reference
 
-- Full trace analysis: `/Users/matthew/Documents/Code/Cardiac-ACR-Opus46/DEVELOPMENT_LOG.md`
+- Full trace analysis: `/Users/matthew/Documents/Code/Cardiac-ACR-2026/docs/DEVELOPMENT_LOG.md`
 
 ---
 
@@ -126,7 +126,7 @@ After removal, clean up imports only used by removed functions (e.g., `matplotli
 
 ---
 
-## Step 9: Update `DEVELOPMENT_LOG.md`
+## Step 9: Update `docs/DEVELOPMENT_LOG.md`
 
 Update the analysis file to reflect the completed cleanup.
 

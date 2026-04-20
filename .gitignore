@@ -1,10 +1,15 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 
 # IDE
 .idea/
+
+# macOS
+.DS_Store
+
+# Local notes
+*.rtf
 
 # Data files (large — keep out of git)
 data/WSI/
