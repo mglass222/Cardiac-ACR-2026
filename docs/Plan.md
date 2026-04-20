@@ -1,4 +1,4 @@
-# Plan: Remove Unused Components from Cardiac-ACR-Opus46
+# Plan: Remove Unused Components from Cardiac-ACR-2026
 
 ## Context
 

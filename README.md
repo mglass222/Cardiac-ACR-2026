@@ -163,8 +163,8 @@ Common setup failures:
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/mglass222/Cardiac-ACR-Opus46.git
-cd Cardiac-ACR-Opus46
+git clone https://github.com/mglass222/Cardiac-ACR-2026.git
+cd Cardiac-ACR-2026
 ```
 
 ### 2. Place your data
@@ -202,7 +202,7 @@ The pipeline will:
 ## Project Structure
 
 ```
-Cardiac-ACR-Opus46/
+Cardiac-ACR-2026/
 │
 ├── cardiac_acr/
 │   ├── __main__.py                   Package entry point for `python -m cardiac_acr`
