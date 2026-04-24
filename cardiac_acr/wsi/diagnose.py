@@ -6,23 +6,24 @@ Backend-agnostic whole-slide diagnosis pipeline.
 
 Accepts a :class:`cardiac_acr.backends.BackendClassifier` and runs:
 
-  1. Preprocessing — PNG extraction + tissue filtering (always).
-     Default (streaming) mode scores tiles in-memory per-slide and
-     writes no tile/patch PNGs to disk. Pass ``--no-streaming`` to run
-     the legacy disk-based path that materializes ~5 GB of
-     intermediate PNGs per slide to ``TILE_DIR`` and ``SPLIT_TILE_DIR``.
-  2. Classification — each patch through ``classifier.classify``, saving
-     softmax probabilities to ``classifier.saved_database_dir``. The
-     DataLoader workers apply the <50% tissue filter in-line; a
-     sentinel + custom collate drops rejects before the GPU sees them.
+  1. Preprocessing — SVS → scaled PNG + filtered PNG per slide.
+     Tile scoring runs in-memory per slide; no tile/patch PNGs are
+     written to disk.
+  2. Classification — 224×224 patches are streamed from the SVS via
+     OpenSlide (``_StreamingPatchDataset``) and pushed through
+     ``classifier.classify``, saving softmax probabilities to
+     ``classifier.saved_database_dir``. The DataLoader workers apply
+     the <50% tissue filter in-line; a sentinel + custom collate drops
+     rejects before the GPU sees them.
   3. Threshold filtering — drop patches whose top probability is below
      ``config.PREDICTION_THRESHOLD``.
   4. Slide-level diagnosis — aggregate filtered patch labels + a
      dedicated 1R2 focus count into a single rejection grade.
 
-Both modes produce the same ``model_predictions_dict_<slide>.pickle``
-contract (keys match the ``get_coords_from_name`` regex); downstream
-consumers (count_1r2, annotate_png, annotate_svs) work unchanged.
+Predictions-dict keys are synthetic patch filenames of the form
+``NNN-tile-rR-cC-xX-yY.png`` matching ``get_coords_from_name`` so
+downstream consumers (count_1r2, annotate_png, annotate_svs) work
+unchanged.
 
 Outputs land under ``classifier.saved_database_dir`` and
 ``classifier.slide_dx_dir``. PNG/SVS annotation writing is not yet
@@ -30,14 +31,17 @@ wired in (see DEVELOPMENT_LOG "V1 scope").
 
 Usage:
     python -m cardiac_acr.wsi.diagnose --backend {uni,resnet}
-    python -m cardiac_acr.wsi.diagnose --backend uni --no-streaming
+
+The legacy disk-based pipeline (materializing ~5 GB of tile/patch
+PNGs per slide to ``TILE_DIR`` + ``SPLIT_TILE_DIR``) is preserved on
+the ``disk-mode`` branch — useful if you need to eyeball intermediate
+PNGs during filter tuning. ``git checkout disk-mode`` to recover.
 """
 
 import argparse
 import os
 import pickle
 import time
-from os import listdir
 
 import numpy as np
 import torch
@@ -53,9 +57,7 @@ from cardiac_acr.preprocessing.filter_patches import (
     tissue_percent,
 )
 from cardiac_acr.preprocessing import slide
-from cardiac_acr.preprocessing import tiles
 from cardiac_acr.preprocessing.tiles import score_tiles
-from cardiac_acr.preprocessing import tileset_utils
 from cardiac_acr.utils import cardiac_utils as utils
 from cardiac_acr.wsi import count_1r2
 
@@ -65,43 +67,18 @@ from cardiac_acr.wsi import count_1r2
 # a property of the backend itself.
 _CLASSIFY_BATCH = 64
 
-# DataLoader workers for patch PIL decode + tissue filter + transform. 8
+# DataLoader workers for OpenSlide read + tissue filter + transform. 8
 # saturates the 2070 SUPER during classify on this project; bump if a
 # faster GPU is still CPU-bound.
 _CLASSIFY_WORKERS = 8
 
-# Minimum tissue percentage a patch must have to be classified. Matches
-# the threshold used by the old disk-based filter_patches pass.
+# Minimum tissue percentage a patch must have to be classified.
 _TISSUE_PCT_MIN = 50
 
 
-class _PatchFileDataset(Dataset):
-    """Disk-mode dataset: patches are 224×224 PNGs on disk under
-    ``SPLIT_TILE_DIR/<slide>/``. Produced by the
-    ``tiles.multiprocess_filtered_images_to_tiles`` +
-    ``tileset_utils.process_tilesets_multiprocess`` pre-loop."""
-
-    def __init__(self, patch_paths, transform):
-        self.patch_paths = patch_paths
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.patch_paths)
-
-    def __getitem__(self, idx):
-        path = self.patch_paths[idx]
-        with Image.open(path) as img:
-            rgb = np.asarray(img.convert("RGB"))
-        filtered = apply_image_filters(rgb)
-        if tissue_percent(filtered) < _TISSUE_PCT_MIN:
-            return path, None
-        tensor = self.transform(Image.fromarray(rgb))
-        return path, tensor
-
-
 class _StreamingPatchDataset(Dataset):
-    """Streaming-mode dataset: patches are read on-the-fly from the SVS
-    via OpenSlide at level 0. No intermediate patch PNGs on disk.
+    """Streams 224×224 patches from the SVS via OpenSlide at level 0.
+    No intermediate patch PNGs on disk.
 
     Constructed from a list of top-scoring tiles (from
     ``TileSummary.top_tiles()``); each tile yields a 5x5 grid of
@@ -146,8 +123,7 @@ class _StreamingPatchDataset(Dataset):
         tile_r, tile_c, x, y = self.coords[idx]
         patch_size = cg.PATCH_SIZE
         # read_region always returns patch_size×patch_size; OpenSlide
-        # zero-pads past the slide edge (→ black on RGB convert),
-        # matching the legacy tileset_utils black-padding behaviour.
+        # zero-pads past the slide edge (→ black on RGB convert).
         region = self._slide.read_region((x, y), 0, (patch_size, patch_size))
         rgb = np.asarray(region.convert("RGB"))
         filtered = apply_image_filters(rgb)
@@ -182,36 +158,22 @@ def _ensure_dirs(classifier: BackendClassifier):
 
 def classify_patches(slide_number, classifier: BackendClassifier,
                      batch_size=_CLASSIFY_BATCH,
-                     num_workers=_CLASSIFY_WORKERS,
-                     streaming=True):
+                     num_workers=_CLASSIFY_WORKERS):
     """Run every patch through ``classifier.classify``, save softmax probs.
 
-    Tissue filtering happens inside the DataLoader workers; a sentinel
-    + ``_drop_empty_collate`` drop rejects before the batch hits the
-    GPU, so no separate filter pass is needed.
-
-    Default (``streaming=True``): patches are streamed from the SVS
-    via OpenSlide driven by in-memory tile scoring — no disk PNGs
-    read. ``streaming=False`` falls back to loading patches from
-    ``SPLIT_TILE_DIR/<slide>/`` (the legacy disk path; requires a
-    prior ``tiles`` + ``tileset_utils`` pre-loop to have written
-    them).
+    Tile scoring runs in-memory; 224×224 patches are streamed from the
+    SVS via OpenSlide. The DataLoader workers apply the <50% tissue
+    filter in-line; a sentinel + ``_drop_empty_collate`` drops rejects
+    before the batch hits the GPU.
     """
     t0 = time.time()
 
-    if streaming:
-        tile_summary = score_tiles(slide_number)
-        top_tiles = tile_summary.top_tiles()
-        dataset = _StreamingPatchDataset(
-            slide_number, top_tiles, classifier.transform
-        )
-        total_candidates = len(dataset)
-    else:
-        patch_dir = os.path.join(cg.SPLIT_TILE_DIR, str(slide_number))
-        patch_names = sorted(listdir(patch_dir))
-        patch_paths = [os.path.join(patch_dir, p) for p in patch_names]
-        dataset = _PatchFileDataset(patch_paths, classifier.transform)
-        total_candidates = len(patch_paths)
+    tile_summary = score_tiles(slide_number)
+    top_tiles = tile_summary.top_tiles()
+    dataset = _StreamingPatchDataset(
+        slide_number, top_tiles, classifier.transform
+    )
+    total_candidates = len(dataset)
 
     device = classifier.device
     loader = DataLoader(
@@ -330,10 +292,9 @@ def diagnose(slide_number, classifier: BackendClassifier):
     return dx, class_count
 
 
-def run(backend: str, checkpoint_path=None, streaming=True):
+def run(backend: str, checkpoint_path=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
-    print(f"mode: {'streaming' if streaming else 'disk-based'}")
 
     classifier = load_classifier(backend, device=device,
                                  checkpoint_path=checkpoint_path)
@@ -344,22 +305,10 @@ def run(backend: str, checkpoint_path=None, streaming=True):
     print("slides to process:", slides_to_process)
 
     t0 = time.time()
-    # Always needed: count_1r2 reads PNG_SLIDE_DIR, and score_tiles
-    # (streaming mode) reads the filtered PNG. Both are cheap — one
-    # PNG and one filtered PNG per slide.
+    # count_1r2 reads PNG_SLIDE_DIR, and score_tiles reads the filtered
+    # PNG. Both are cheap — one PNG and one filtered PNG per slide.
     slide.multiprocess_training_slides_to_images(image_num_list=slides_to_process)
     wsi_filter.multiprocess_apply_filters_to_images(image_num_list=slides_to_process)
-
-    if not streaming:
-        # Disk-only: score tiles, save top tiles as 1120×1120 level-0
-        # PNGs under TILE_DIR, then split those into 224×224 patch PNGs
-        # under SPLIT_TILE_DIR. This is the 3-5 GB of disk writes per
-        # slide that streaming mode eliminates.
-        tiles.multiprocess_filtered_images_to_tiles(
-            save_top_tiles=False, image_num_list=slides_to_process
-        )
-        for s in slides_to_process:
-            tileset_utils.process_tilesets_multiprocess(s)
     print(f"preprocessing done in {time.time() - t0:.1f}s")
 
     slide_bar = tqdm(
@@ -373,7 +322,7 @@ def run(backend: str, checkpoint_path=None, streaming=True):
         slide_bar.set_description(f"slides (current: {slide_number})")
         slide_t0 = time.time()
 
-        classify_patches(slide_number, classifier, streaming=streaming)
+        classify_patches(slide_number, classifier)
         threshold_predictions(slide_number, classifier)
         diagnose(slide_number, classifier)
 
@@ -392,16 +341,8 @@ def main(argv=None):
     parser.add_argument("--checkpoint", default=None,
                         help="Path to the backend checkpoint (defaults to the "
                              "backend's MODEL_DIR).")
-    parser.add_argument("--streaming", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Stream 224x224 patches from the SVS via OpenSlide "
-                             "instead of materializing intermediate tile/patch "
-                             "PNGs to disk. Tile scoring still runs, in-memory "
-                             "per-slide. Default: enabled. Pass --no-streaming "
-                             "to force the legacy disk-based path (writes ~5 GB "
-                             "of intermediate PNGs per slide).")
     args = parser.parse_args(argv)
-    run(args.backend, checkpoint_path=args.checkpoint, streaming=args.streaming)
+    run(args.backend, checkpoint_path=args.checkpoint)
 
 
 if __name__ == "__main__":

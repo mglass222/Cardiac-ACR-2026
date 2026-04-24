@@ -223,22 +223,23 @@ Prints:
 ### 5. Run end-to-end WSI inference
 
 ```bash
-# Default: streaming. Reads 224×224 patches directly from the SVS via
-# OpenSlide, no intermediate tile/patch PNGs on disk. Preprocessing
-# drops from several minutes to <10 seconds per slide.
 python -m cardiac_acr.wsi.diagnose --backend uni
-
-# Legacy disk-based path: materializes ~5 GB of intermediate tile +
-# patch PNGs per slide under data/DeepHistoPath/{tiles_png,tiles_png_split}/
-python -m cardiac_acr.wsi.diagnose --backend uni --no-streaming
 ```
+
+Patches are streamed from each SVS via OpenSlide — no intermediate
+tile/patch PNGs are written to disk. Preprocessing per slide is
+typically under 10 seconds; the heavy lifting is the UNI2-h encode +
+classify pass.
+
+The legacy disk-based pipeline (writes ~5 GB of intermediate tile +
+patch PNGs per slide, useful if you need to eyeball individual patches
+during filter tuning) is preserved on the `disk-mode` branch. Recover
+it with `git checkout disk-mode`.
 
 For each SVS file in `data/WSI/Test/`:
 
 1. Extract PNG + tissue-filtered image (`slide` + `filter` modules).
-2. Score tiles. Default mode scores in-memory per-slide. With
-   `--no-streaming`, also splits into 224×224 patches on disk
-   (`tiles` + `tileset_utils`).
+2. Score tiles in-memory.
 3. Drop patches with < 50% tissue (inside the classify DataLoader).
 4. Encode surviving patches with UNI2-h and classify with the head.
 5. Threshold predictions (keep any patch whose top softmax exceeds
@@ -350,8 +351,7 @@ Cardiac-ACR/
 │   │   ├── slide.py                    WSI loading and PNG extraction
 │   │   ├── filter.py                   Tissue filtering (green, grays, pen marks)
 │   │   ├── tiles.py                    Tile scoring, summaries, and extraction
-│   │   ├── tileset_utils.py            Split tiles into 224×224 patches
-│   │   ├── filter_patches.py           Filter patches by tissue content
+│   │   ├── filter_patches.py           Per-patch tissue filtering helpers
 │   │   └── openslide_compat.py         OpenSlide import + Windows DLL setup
 │   │
 │   ├── wsi/                            WSI-level inference and annotation

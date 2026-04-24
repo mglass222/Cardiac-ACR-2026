@@ -195,12 +195,17 @@ level. Streaming is safe to promote to default.
 
 Streaming became the default the same day via a small follow-up: CLI
 flag changed to `argparse.BooleanOptionalAction` with `default=True`.
-`python -m cardiac_acr.wsi.diagnose --backend uni` now runs streaming;
-`--no-streaming` reinstates the legacy disk path for debugging
-(still works, still produces identical outputs). Paper-time branch
-will strip the disk path outright (remove `_PatchFileDataset`, the
-flag, and the gated preprocessing calls). See `DEVELOPMENT_LOG.md`
-2026-04-24 entries for the full diff and per-slide numbers.
+Later the same day, with the multi-slide reproducibility check clean,
+the disk path was removed from master entirely: `_PatchFileDataset`,
+the `--streaming/--no-streaming` flag, the conditional preprocessing
+calls in `run()`, and `preprocessing/tileset_utils.py` are all gone.
+The full pre-cleanup state is preserved on the `disk-mode` branch
+(push at `b609d3e`) for anyone who needs on-disk 224×224 PNGs during
+filter tuning; `git checkout disk-mode` restores it. The proper
+long-term replacement for the on-disk debug affordance is a
+`--dump-patches` side-effect flag on streaming — not yet
+implemented. See `DEVELOPMENT_LOG.md` 2026-04-24 entries for the
+full diff, per-slide numbers, and removal rationale.
 
 ### 2026-04-23 — Fuse tissue filter into the classify DataLoader
 

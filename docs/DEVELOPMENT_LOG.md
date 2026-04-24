@@ -1364,3 +1364,64 @@ agreement), flipped the default:
 The disk path code stays intact. Eventual paper-prep branch removes
 it along with `_PatchFileDataset`, the CLI flag, the conditional in
 `run()`, and `preprocessing/tileset_utils.py`.
+
+## 2026-04-24 — Disk path removed from master; preserved on `disk-mode` branch
+
+Retrospective on the same-day flag-based design: with the four-slide
+reproducibility check showing zero functional drift (100% argmax
+agreement across 109,885 patch pairs; max prob drift 0.002), the
+disk path is purely ballast on master — two parallel code paths to
+read, one of them never exercised going forward, slated for bit-rot
+the next time someone refactors `apply_image_filters` or the
+transform.
+
+User still has a legitimate use case for disk-materialized patches:
+filter tuning benefits from being able to sort on-disk 224×224 PNGs
+by tissue% and eyeball the marginal cases. Resolution: keep the
+disk path fully alive on a dedicated `disk-mode` branch (pushed to
+`origin/disk-mode` at `b609d3e`, the pre-cleanup state), and strip
+it cleanly from master.
+
+**Removed from master.**
+- `_PatchFileDataset` class (disk-mode patch loader).
+- `streaming` kwarg from `classify_patches` and `run`; both now
+  single-path streaming.
+- `if not streaming:` block in `run()` that called
+  `tiles.multiprocess_filtered_images_to_tiles` and looped
+  `tileset_utils.process_tilesets_multiprocess`.
+- `--streaming/--no-streaming` CLI flag from `main()`.
+- Imports: `from os import listdir`, `from cardiac_acr.preprocessing
+  import tiles` (replaced by the already-present
+  `from cardiac_acr.preprocessing.tiles import score_tiles`),
+  `from cardiac_acr.preprocessing import tileset_utils`.
+- `mode: streaming|disk-based` print line from `run()`.
+- Whole file `cardiac_acr/preprocessing/tileset_utils.py` (no
+  remaining callers anywhere in the package).
+
+**Kept on master.** `preprocessing/tiles.py` is intact —
+`score_tiles`, `TileSummary.top_tiles`, and `tile_to_pil_tile` are
+still called. Some of its module-level functions are now unreachable
+on master (`multiprocess_filtered_images_to_tiles`, `image_list_to_tiles`,
+`summary_and_tiles`); pruning them is module-internal noise and can
+wait.
+
+**Recovery.** `git checkout disk-mode` restores the full two-path
+state. To pull just one file back without switching branches,
+`git show disk-mode:cardiac_acr/preprocessing/tileset_utils.py > ...`.
+
+**Long-term replacement for on-disk debugging.** A `--dump-patches`
+flag on the streaming dataset would let filter tuning happen from
+master: run diagnose with the flag, the DataLoader worker writes each
+224×224 patch (plus tissue%) to a debug dir as a side effect, and
+you get the same visual affordance without keeping a parallel
+codepath. Not implemented today; implement when filter tuning
+actually needs it.
+
+**Code.**
+- `cardiac_acr/wsi/diagnose.py` — edits above; single-path streaming
+  is now the entire public surface.
+- `cardiac_acr/preprocessing/tileset_utils.py` — deleted.
+- `README.md` — "Running the pipeline" is one command; notes
+  `disk-mode` branch as the recovery path for intermediate-PNG
+  debugging; `tileset_utils.py` line removed from the project-layout
+  tree.
