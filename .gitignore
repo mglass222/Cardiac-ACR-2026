@@ -1,22 +1,29 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
 
 # IDE
 .idea/
+.vscode/
 
 # macOS
 .DS_Store
 
 # Local notes
 *.rtf
-docs/
 
-# Data files (large — keep out of git)
+# Data (gitignored — tens of GB of WSI, patches, features, outputs)
 data/WSI/
 data/DeepHistoPath/
 data/Backend/
 data/Saved_Models/
+data/Features/
+data/Patches/
 
-# Keep the directory structure via .gitkeep files
+# Keep the data directory structure via .gitkeep files
 !data/**/.gitkeep
