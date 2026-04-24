@@ -17,13 +17,8 @@ venv/
 # Local notes
 *.rtf
 
-# Data (gitignored — tens of GB of WSI, patches, features, outputs)
-data/WSI/
-data/DeepHistoPath/
-data/Backend/
-data/Saved_Models/
-data/Features/
-data/Patches/
-
-# Keep the data directory structure via .gitkeep files
-!data/**/.gitkeep
+# Data (gitignored — tens of GB of WSI, patches, features, outputs).
+# The `data/` dir (or a symlink pointing at the actual data location)
+# should be created per-host, not tracked.
+data
+data/

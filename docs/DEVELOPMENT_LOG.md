@@ -1213,3 +1213,107 @@ check, giving ~74 tissue-patches/s through UNI — modestly faster than
 pass eliminated. At `PREDICTION_THRESHOLD=0.99`, 9,211 / 25,540 patches
 (36%) cleared the top-softmax cutoff. Dx came out `2R` (driven by the
 1R2 focus count from the segmentation pipeline).
+
+## 2026-04-24 — Streaming WSI inference behind `--streaming` flag
+
+**Motivation.** Yesterday's run on slide 139 spent 432.9s in preprocessing
+— writing ~500 level-0 1120×1120 tile PNGs (~1.8 GB) to `TILE_DIR` and
+~39,925 224×224 patch PNGs (~3.7 GB) to `SPLIT_TILE_DIR`, then reading
+all of the surviving patches once from the classify DataLoader and
+never touching them again. On a 13-minute per-slide total, the pre-loop
+was more expensive than classify itself. See `PERFORMANCE_IDEAS.md`
+item #1.
+
+**Change.** Added an OpenSlide-backed streaming path to `wsi/diagnose.py`
+as an additive, flag-gated alternative to the disk path. Both modes
+coexist; the default is still disk-based. `--streaming` on the CLI
+picks the new path (or `streaming=True` on `run()`).
+
+New `_StreamingPatchDataset` alongside the existing `_PatchFileDataset`:
+
+- Constructor takes `(slide_number, top_tiles, transform)`. Stores the
+  SVS path only — no open handle at construction time, since OpenSlide
+  handles don't survive DataLoader `fork()`.
+- Eagerly walks each `TileSummary.top_tiles()` entry in 224-pixel
+  strides starting at its level-0 bbox `(o_c_s, o_r_s)`, producing a
+  flat list of `(tile_r, tile_c, patch_x, patch_y)` level-0 coords.
+  Keeps `tile_r`/`tile_c` for human-readable synthetic filenames.
+- `__getitem__` lazily opens the slide once per worker
+  (`if self._slide is None: self._slide = slide.open_slide(path)`).
+  Works with `num_workers=0` identically — no `worker_init_fn` needed.
+- Reads always request a full 224×224 window at level 0. OpenSlide
+  zero-pads past the slide edge (transparent → black on RGB convert),
+  matching the legacy `tileset_utils.tiles_to_patches` paste-on-black
+  behaviour for partial boundary patches.
+- Reuses the exact same `apply_image_filters` + `tissue_percent` + 50%
+  cutoff + `(name, None)` sentinel + `_drop_empty_collate` pipeline
+  from 2026-04-23's `_PatchFileDataset`. The only difference is where
+  the RGB bytes come from.
+- Synthetic filename keys: `f"{slide:03d}-tile-r{r}-c{c}-x{x}-y{y}.png"`.
+  Matches the `.*-x(\d+)-y(\d+).*\..*` regex in
+  `utils.get_coords_from_name`, so `count_1r2`, `annotate_png`, and
+  `annotate_svs` all work unchanged on the new pickles.
+
+`run()` now takes `streaming=False` and wraps the
+`tiles.multiprocess_filtered_images_to_tiles` and
+`tileset_utils.process_tilesets_multiprocess` preprocessing calls in
+`if not streaming:`. `slide.multiprocess_training_slides_to_images`
+and `wsi_filter.multiprocess_apply_filters_to_images` stay
+unconditional because `count_1r2` reads `PNG_SLIDE_DIR` +
+`FILTERED_IMAGE_DIR`, and streaming's `score_tiles` call consumes the
+filtered PNG. Those two produce just one PNG each (tens of MB total),
+not the multi-GB chunk.
+
+`classify_patches(streaming=False)` picks the dataset class; the
+DataLoader, classify loop, predictions-dict serialization, and
+end-of-slide log line are shared across both modes.
+
+**Measured on slide 139 (A/B against yesterday's disk-mode baseline,
+same hardware).**
+
+| Metric | Disk (yesterday) | Streaming (today) |
+|---|---|---|
+| Preprocessing time | 432.9s | **6.8s** (-98%) |
+| Classify time | 344.1s | 344.2s (identical) |
+| Total per-slide time | 777s | **351s** (-55%) |
+| Tissue patches kept | 25,540 / 39,925 | 25,540 / 39,925 (identical) |
+| Threshold-pass @ 0.99 | 9,211 / 25,540 | 9,211 / 25,540 (identical) |
+| Class counts (filtered) | `{1R1A: 199, 1R2: 14, Healing: 2949, Normal: 6025, Quilty: 24}` | identical |
+| Slide dx | `2R` | `2R` |
+| New bytes under `TILE_DIR`/`SPLIT_TILE_DIR` | ~5.5 GB | **0** |
+
+**Patch-level agreement.** 25,540 / 25,540 coordinates match between
+the two runs. 100% argmax-class agreement. Zero drift at tile
+boundaries — the predicted <1% edge drift from OpenSlide reading real
+neighbouring pixels instead of black padding did not show up in
+practice, because the boundary patches either still pass/fail the
+tissue check the same way, or they fall inside the filtered-tissue
+region where the extra real pixels don't change argmax.
+
+**Code.**
+- `cardiac_acr/wsi/diagnose.py` — `_StreamingPatchDataset` added
+  alongside `_PatchFileDataset`; `classify_patches` takes
+  `streaming=False`; `run()` gates the tile-save and tileset-split
+  preprocessing calls; `main()` adds `--streaming` argparse flag;
+  module docstring describes both modes.
+- `README.md` — "Running the pipeline" section documents both CLI
+  invocations.
+- `preprocessing/tiles.py` — unchanged. The `save_top_tiles = True`
+  hardcode at line 534 is irrelevant because disk-mode callers want
+  saves anyway and streaming mode skips the call via the
+  `if not streaming:` gate.
+
+**Git workflow.** This change landed on `Cardiac-ACR-2026` master as
+part of Phase 0's git setup (Phase 0 = pushing the post-#3 state onto
+the existing GitHub repo as split commits). Streaming is additive;
+disk mode is untouched. Before paper submission, a follow-up branch
+will strip the disk path entirely (remove `_PatchFileDataset`, the
+`--streaming` flag, the gated preprocessing calls, and
+`preprocessing/tileset_utils.py`).
+
+**Next candidates (from `PERFORMANCE_IDEAS.md`).** With #1 shipped, the
+remaining sub-second-to-tens-of-seconds-per-slide wins are #2 (cache
+UNI features per test slide so threshold/head sweeps don't re-encode)
+and #6 (structured experiment logging). #4 (multi-slide pipelining)
+and #7 (profile pre-loop) are lower-priority given the pre-loop is
+now 6.8s.

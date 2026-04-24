@@ -18,63 +18,6 @@ a date and a pointer to the commit.
 
 ---
 
-## 1. Streaming WSI inference (no intermediate patch PNGs)
-
-**Motivation.** The current `wsi.diagnose` pipeline materializes every
-intermediate artifact on disk: SVS → PNG → filtered PNG → scored tile
-PNGs → 224×224 patch PNGs → (tissue filter deletes the bad ones) →
-opened again for classification. Per slide that's 1–7 GB of
-small-file IO, most of which is written and re-read seconds later.
-On HDD or NFS it's a real bottleneck; on SSD it wastes write cycles
-and disk space; at any storage tier it makes per-slide cleanup
-necessary and complicates parallelization across slides.
-
-**Approach.** Replace steps 4–6 of `diagnose.run()` with an
-OpenSlide-backed `torch.utils.data.Dataset`:
-
-```
-PatchDataset.__getitem__(idx):
-    region = openslide.read_region(x_idx, y_idx, 224, 224)
-    if tissue_fraction(region) < 0.5:
-        return SKIP_SENTINEL
-    return transform(region)
-
-DataLoader(num_workers=8, worker_init_fn=reopen_slide, pin_memory=True)
-  → UNIBackbone.encode()
-  → head → softmax → dict[(x, y) → probs]
-```
-
-Patches that fail the tissue check never leave the worker process.
-The DataLoader hides OpenSlide-read latency behind GPU compute. Read
-in larger chunks (e.g., 2048×2048) and slice in memory to amortize
-OpenSlide's per-call overhead. OpenSlide handles don't pickle across
-workers — each worker needs to `open_slide` itself in
-`worker_init_fn`, which is a standard pattern.
-
-**Cost / risk.**
-- One-afternoon refactor. Scope: new
-  `cardiac_acr/wsi/streaming_dataset.py`; rewrite
-  `wsi.diagnose.classify_patches` to consume it; drop the
-  preprocessing steps that write intermediate patches.
-- Loses the "go inspect the PNG that got classified wrong"
-  debugging affordance. Mitigation: add a `--dump-patches` flag that
-  reinstates disk writes for error-analysis runs.
-- Existing modules (`tiles.py`, `tileset_utils.py`,
-  `filter_patches.py`) stay as-is for **training patch extraction**,
-  which legitimately needs ImageFolder-style on-disk patches. Only
-  the WSI inference loop changes.
-- Annotation functions (`annotate_png`, `annotate_svs`) read from
-  `Saved_Databases/` pickles, not patch files, so they continue to
-  work unchanged.
-
-**Priority.** High payoff, moderate effort. Cuts per-slide disk
-usage from GB to effectively zero, removes a cleanup step, and likely
-speeds up inference on non-SSD storage by a large factor. Do when
-current methodology work (test-set labeling, calibration) is not
-blocking.
-
----
-
 ## 2. Cache UNI features for test-slide patches
 
 **Motivation.** Re-running `wsi.diagnose` to sweep `PREDICTION_THRESHOLD`
@@ -223,6 +166,31 @@ phase is the bottleneck.
 ---
 
 ## Shipped
+
+### 2026-04-24 — Streaming WSI inference behind `--streaming` flag
+
+Per-slide preprocessing (SVS → PNG → filtered PNG → scored tile PNGs →
+224×224 patch PNGs) took 432.9s on slide 139 and wrote ~5.5 GB of
+intermediate PNGs to `TILE_DIR` and `SPLIT_TILE_DIR`. Added
+`_StreamingPatchDataset` alongside `_PatchFileDataset` in
+`wsi/diagnose.py`, gated by a new `--streaming` CLI flag. When
+streaming, `tiles.score_tiles` runs in memory per slide, and 224×224
+patches are read from the SVS via OpenSlide inside each DataLoader
+worker — no tile/patch PNGs on disk. Tissue filter, sentinel pattern,
+and `_drop_empty_collate` from 2026-04-23 are reused.
+
+Measured on slide 139 (2070 SUPER, SSD): preprocessing 432.9s → 6.8s
+(-98%); classify unchanged at 344s; total per-slide 777s → 351s
+(-55%); 0 new bytes in `TILE_DIR`/`SPLIT_TILE_DIR`. Patch-level:
+25,540/25,540 coord overlap with yesterday's disk baseline, 100%
+argmax-class agreement, identical class counts, same slide dx `2R`.
+
+Disk mode stays the default for now; flag flip to streaming-default
+is a small follow-up commit after a broader slate of slides
+reproduces the zero-drift result. Paper-time branch will strip the
+disk path outright (remove `_PatchFileDataset`, the flag, and the
+gated preprocessing calls). See `DEVELOPMENT_LOG.md` 2026-04-24
+entry for the full diff and rationale.
 
 ### 2026-04-23 — Fuse tissue filter into the classify DataLoader
 
