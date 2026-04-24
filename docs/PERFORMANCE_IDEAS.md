@@ -185,12 +185,19 @@ Measured on slide 139 (2070 SUPER, SSD): preprocessing 432.9s → 6.8s
 25,540/25,540 coord overlap with yesterday's disk baseline, 100%
 argmax-class agreement, identical class counts, same slide dx `2R`.
 
-Disk mode stays the default for now; flag flip to streaming-default
-is a small follow-up commit after a broader slate of slides
-reproduces the zero-drift result. Paper-time branch will strip the
-disk path outright (remove `_PatchFileDataset`, the flag, and the
-gated preprocessing calls). See `DEVELOPMENT_LOG.md` 2026-04-24
-entry for the full diff and rationale.
+Multi-slide reproducibility check (same hardware, same UNI head) on
+slides 111, 119, 135, 139: 109,885 patch pairs total, 100% argmax
+agreement across all four slides. Max per-patch probability drift
+~0.002 (1-LSB-level numerical noise from legacy PIL-PNG roundtrip vs
+streaming's native JPEG decode) — well below the 0.99 decision
+threshold. All four filtered pickles bit-identical at the class-count
+level. Streaming is safe to promote to default.
+
+Disk mode stays the default for now; flag flip is a small follow-up
+commit. Paper-time branch will strip the disk path outright (remove
+`_PatchFileDataset`, the flag, and the gated preprocessing calls).
+See `DEVELOPMENT_LOG.md` 2026-04-24 entry for the full diff and
+per-slide numbers.
 
 ### 2026-04-23 — Fuse tissue filter into the classify DataLoader
 

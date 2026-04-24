@@ -1290,6 +1290,30 @@ practice, because the boundary patches either still pass/fail the
 tissue check the same way, or they fall inside the filtered-tissue
 region where the extra real pixels don't change argmax.
 
+**Multi-slide reproducibility check (4 slides total).** Re-ran the
+same A/B on three additional slides (111, 119, 135) against their
+disk-mode baselines from 2026-04-22. Summary:
+
+| Slide | Patches | Coord overlap | Argmax agreement | Max prob drift | Filtered counts | Dx |
+|---|---|---|---|---|---|---|
+| 111 | 27,344 | 100% | 100% | 0.0013 | identical | 1R2 |
+| 119 | 28,118 | 100% | 100% | 0.0012 | identical | 1R2 |
+| 135 | 28,883 | 100% | 100% | 0.0018 | identical | 2R |
+| 139 | 25,540 | 100% | 100% | 0.0015 | identical | 2R |
+
+109,885 patch pairs total across all four slides, 100% argmax agreement.
+Max per-patch probability drift is ~0.002 — well below any decision
+boundary at the 0.99 threshold. The drift (not exactly zero, unlike
+139 alone where it was bit-identical) is consistent with a 1-LSB
+difference in the decoded RGB: legacy reads a PIL-re-saved PNG,
+streaming decodes the SVS's JPEG tile natively, and those two paths
+round slightly differently in a handful of pixels. No functional
+consequence — same patches kept, same class per patch, same filtered
+pickle, same slide dx.
+
+Confidence: the streaming path is safe to promote to default once the
+flag-default flip is convenient.
+
 **Code.**
 - `cardiac_acr/wsi/diagnose.py` — `_StreamingPatchDataset` added
   alongside `_PatchFileDataset`; `classify_patches` takes
