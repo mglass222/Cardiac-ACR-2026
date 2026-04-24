@@ -179,19 +179,25 @@ patches are read from the SVS via OpenSlide inside each DataLoader
 worker — no tile/patch PNGs on disk. Tissue filter, sentinel pattern,
 and `_drop_empty_collate` from 2026-04-23 are reused.
 
-Measured on slide 139 (2070 SUPER, SSD): preprocessing 432.9s → 6.8s
-(-98%); classify unchanged at 344s; total per-slide 777s → 351s
-(-55%); 0 new bytes in `TILE_DIR`/`SPLIT_TILE_DIR`. Patch-level:
-25,540/25,540 coord overlap with yesterday's disk baseline, 100%
-argmax-class agreement, identical class counts, same slide dx `2R`.
+Headline numbers (2070 SUPER, SSD, slide 139):
 
-Multi-slide reproducibility check (same hardware, same UNI head) on
-slides 111, 119, 135, 139: 109,885 patch pairs total, 100% argmax
-agreement across all four slides. Max per-patch probability drift
-~0.002 (1-LSB-level numerical noise from legacy PIL-PNG roundtrip vs
-streaming's native JPEG decode) — well below the 0.99 decision
-threshold. All four filtered pickles bit-identical at the class-count
-level. Streaming is safe to promote to default.
+| | Disk | Streaming | Δ |
+|---|---|---|---|
+| Preprocessing | 432.9 s | 6.8 s | **−98 %** |
+| Classify | 344.1 s | 344.0 s | 0 |
+| Total per slide | ~777 s | ~351 s | **−55 %** |
+| Intermediate disk writes | ~5.5 GB | 0 | **−100 %** |
+
+Correctness A/B on 4 slides (111, 119, 135, 139), 109,885 total
+patch pairs: 100 % coord overlap, 100 % argmax-class agreement, max
+per-patch prob drift 0.002 (1-LSB decode noise from PIL-PNG
+roundtrip vs native SVS JPEG decode — three orders of magnitude
+below the 0.99 threshold). All four slide-level dx values match
+(`1R2, 1R2, 2R, 2R`). Streaming is safe as default.
+
+Full per-slide comparison tables (runtime, storage, correctness,
+throughput) live in `DEVELOPMENT_LOG.md` under the 2026-04-24
+"Streaming vs disk: consolidated performance comparison" entry.
 
 Streaming became the default the same day via a small follow-up: CLI
 flag changed to `argparse.BooleanOptionalAction` with `default=True`.

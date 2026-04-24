@@ -1425,3 +1425,115 @@ actually needs it.
   `disk-mode` branch as the recovery path for intermediate-PNG
   debugging; `tileset_utils.py` line removed from the project-layout
   tree.
+
+## 2026-04-24 — Streaming vs disk: consolidated performance comparison
+
+All numbers below: 2070 SUPER (8 GB VRAM, Turing, fp16 autocast),
+local SSD, UNI2-h + linear head, `PREDICTION_THRESHOLD=0.99`,
+`_CLASSIFY_BATCH=64`, `_CLASSIFY_WORKERS=8`. Disk-mode numbers come
+from the 2026-04-22 and 2026-04-23 runs; streaming numbers from the
+four verification runs on 2026-04-24. Classify time is the dominant
+term in both modes because the GPU pass is identical; the delta is
+almost entirely in preprocessing.
+
+### Per-slide runtime (slide 139, 39,925 candidate patches)
+
+| Phase | Disk mode | Streaming | Δ |
+|---|---|---|---|
+| SVS → scaled PNG | kept in both; ~1–2s per slide | kept in both; ~1–2s per slide | 0 |
+| Tissue-filter PNG | kept in both; ~2–3s per slide | kept in both; ~2–3s per slide | 0 |
+| Tile scoring | written to disk as 1120×1120 PNGs (~500 × ~3.7 MB = ~1.8 GB) | in-memory, no writes | disk writes eliminated |
+| Patch extraction | split into 224×224 PNGs (~39,925 × ~150 KB = ~6 GB before tissue filter) | none — patches streamed on demand | disk writes eliminated |
+| **Total preprocessing** | **~432.9 s** | **~6.8 s** | **−98.4 %** |
+| Classify (DataLoader → UNI → head) | 344.1 s | 343.8–344.2 s (3 runs) | ~0 |
+| Threshold + diagnose | <1 s | <1 s | 0 |
+| **Total per slide** | **~777 s (~13 min)** | **~351 s (~6 min)** | **−55 %** |
+
+The preprocessing saving (−426 s per slide) is the entire wall-clock
+win. Classify is wall-clock-identical because both paths feed the
+same 25,540 tensors through the same model.
+
+### Multi-slide runtime (slides 111, 119, 135 batched in one run)
+
+Streaming preprocesses all three slides in parallel (SVS→PNG + filter
+PNG are already multiprocess-per-slide calls) for **7.7 s total**,
+then classify runs serially per slide:
+
+| Slide | Candidate patches | Tissue patches kept | Classify time | Total |
+|---|---|---|---|---|
+| 111 | 43,625 | 27,344 (62.7 %) | 366.6 s | 367.6 s |
+| 119 | 44,575 | 28,118 (63.1 %) | 358.2 s | 359.2 s |
+| 135 | 42,150 | 28,883 (68.5 %) | 370.9 s | 371.8 s |
+| **3-slide batch** | 130,350 | 84,345 (64.7 %) | 1,095.7 s | **~18.3 min** |
+
+The equivalent disk-mode run (estimated from 2026-04-22 numbers) would
+have spent an extra ~430 s per slide in preprocessing × 3 = **~21.5
+min** just on intermediate-PNG materialization, for a total of ~40
+min — more than 2× the streaming wall-clock.
+
+### Storage impact (per slide)
+
+| Artifact | Disk mode | Streaming |
+|---|---|---|
+| Scaled PNG (1/40× of SVS) | ~30–50 MB | ~30–50 MB |
+| Filter PNG | ~20–40 MB | ~20–40 MB |
+| Level-0 tile PNGs (`TILE_DIR/<slide>/`) | **~1.8 GB** (~500 × 1120×1120) | 0 |
+| 224×224 patch PNGs (`SPLIT_TILE_DIR/<slide>/`) | **~3.5–4 GB** (~25–40 k × 150 KB) | 0 |
+| Predictions pickle | ~5 MB | ~5 MB |
+| **Intermediate writes** | **~5.5 GB / slide** | **~0 bytes** |
+
+On a 200-slide test set, that's ~1.1 TB of intermediate PNGs the disk
+path would have written (and read once, and then kept on disk until
+manually cleaned). Streaming is zero.
+
+### Classification correctness (streaming vs disk baseline)
+
+Four-slide A/B, 109,885 total patch pairs. Disk baselines come from
+the 2026-04-22 run (pre-#3 tissue fuse) and the 2026-04-23 slide 139
+run (post-#3); both paths ran against the same UNI head checkpoint
+and the same `apply_image_filters` + `tissue_percent` tissue check,
+so candidate-patch selection is algorithmically identical.
+
+| Slide | Patches | Coord overlap | Argmax agreement | Max per-patch prob drift | Dx disk | Dx stream |
+|---|---|---|---|---|---|---|
+| 111 | 27,344 | 100 % | 100 % | 0.0013 | 1R2 | 1R2 |
+| 119 | 28,118 | 100 % | 100 % | 0.0012 | 1R2 | 1R2 |
+| 135 | 28,883 | 100 % | 100 % | 0.0018 | 2R | 2R |
+| 139 | 25,540 | 100 % | 100 % | 0.0015 | 2R | 2R |
+| **total** | **109,885** | **100 %** | **100 %** | **≤ 0.002** | — | **all match** |
+
+Filtered pickles are bit-identical at the class-count level for every
+slide. The per-patch prob drift (~1e-3) is 1-LSB decode noise — the
+disk path reads a PIL-re-saved PNG, streaming decodes the SVS's JPEG
+tile natively, and those two round slightly differently in a handful
+of pixels. The drift is three orders of magnitude below the 0.99
+threshold, so no classification decision flips.
+
+### Throughput (unchanged by mode choice)
+
+Classify-only throughput is the same across both paths because the
+GPU pass is the bottleneck and it sees the same 25,540 tensors either
+way:
+
+- Dataset-level throughput: **~116 patches/s** (includes tissue-rejected
+  patches that short-circuit inside the DataLoader worker and never
+  hit the GPU)
+- Tissue-patches-through-UNI: **~74 patches/s** (steady-state after
+  2026-04-23's tissue-filter fuse + 2026-04-22's DataLoader rewrite;
+  hardware ceiling is UNI2-h ViT-H fp16 inference on Turing, ~97-98 %
+  SM utilization)
+
+Streaming does not move either number because the `read_region` +
+tissue-filter + transform cost per patch is in the same ballpark as
+the old PIL-open-PNG path, and both are hidden behind `num_workers=8`.
+
+### Summary
+
+Streaming wins on wall-clock by **~55 % per slide** (−7 min on a 13
+min run), eliminates **~5.5 GB of intermediate disk writes per slide**,
+produces **100 % identical classification decisions**, and leaves
+classify throughput unchanged. The only cost is the loss of on-disk
+intermediate PNGs as a debug affordance for filter tuning — mitigated
+by keeping the full disk pipeline alive on the `disk-mode` branch
+(pushed at `b609d3e`) and, long-term, by a `--dump-patches`
+side-effect flag on streaming (not yet implemented).
