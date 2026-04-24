@@ -5,7 +5,7 @@ slide on master (post-2026-04-24, streaming-only). The legacy disk
 pipeline that materialized intermediate tile + patch PNGs is preserved
 on the `disk-mode` branch.
 
-## TL;DR
+## Summary
 
 Two cheap ~MB PNGs per slide get written before the slide loop (the
 scaled and filtered images, both at 1/40 resolution). The 1120×1120
