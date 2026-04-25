@@ -1733,3 +1733,86 @@ grade (`0R`/`1R1A`/`1R2`/`2R`), which depends on focus counts above
 threshold, not raw patch accuracy. Future ablations should report
 slide-level dx agreement (or at minimum, per-class recall on
 clinically actionable classes) alongside the patch metric.
+
+---
+
+## 2026-04-24 — Experimenting with LoRA fine-tune of the UNI2-h tail (in progress)
+
+**This is a speculative entry written before the experiment runs.**
+Will be updated with measured numbers once results are in.
+
+### Hypothesis
+
+After D4 augmentation (+0.58 pp) and a hyperparameter sweep
+(no detectable lift) both failed to close the gap to ResNet's ~0.96,
+the remaining hypothesis is that the **frozen UNI2-h backbone is the
+ceiling**. The features it produces, however good in general, don't
+have the dataset-specific decision boundaries this 11.7K-patch problem
+needs, and no amount of head-side optimization can recover them.
+
+The ViT analog of the prior ResNet recipe (which unlocked
+`layer3`/`layer4` after warming up the head) is to inject **LoRA
+adapters** into the last few transformer blocks. This adds a small
+number of trainable parameters in parallel with the frozen attention
+projections — modern best practice for fine-tuning large pretrained
+models on small domain-specific datasets, and explicitly designed to
+avoid the catastrophic-forgetting risk of a full unfreeze.
+
+### Plan
+
+Custom 50-line LoRA module (no `peft` dependency). Wrap
+`block.attn.qkv` in the **last 4 of UNI2-h's 24 blocks** with rank-8,
+alpha-32 adapters. `alpha=32` (scaling=4) compensates for UNI2-h's
+`init_values=1e-5` LayerScale damping. Train the adapters together
+with a warm-started head (the existing 0.9402 checkpoint) on raw
+patches with per-batch random aug (`RandomRotation(180)` + flips +
+soft `ColorJitter`). Save adapters alongside the head checkpoint;
+extend the WSI inference loader to re-apply the wrapper transparently.
+
+Differential learning rates: head at `5e-5` (warm-started, gentle),
+LoRA at `1e-4`. Class-weighted CE with per-class weight clipped to 5.0
+(the unclipped Hemorrhage weight of 13.3 dominates updates at small
+batch). 15 epochs, batch 16, fp16 autocast + GradScaler (mandatory on
+Turing — `lora_B`'s zero-init grads underflow without it). Grad
+checkpointing on.
+
+Detailed plan: `docs/UNI_LORA_PLAN.md`.
+
+### Success bar
+
+The current val plateau is 0.94 ± 0.005 (run-to-run noise floor
+established by the recent 4-trial repeat). To claim the gap is closed:
+
+- **3 seeds**, mean val acc ≥ **0.955**.
+- Every individual seed run ≥ 0.95.
+- Slide-level dx on slide 139 still `2R` (no regression).
+
+Anything between 0.945 and 0.955 is "partial close" — interesting
+direction but not a clear win. Below 0.945 is in noise band.
+
+### Failure modes to abort on
+
+- **Val acc < 0.93 in epochs 1–2.** Indicates LoRA LR is too high or
+  GradScaler isn't engaged. Kill the run; don't wait it out.
+- **Train loss looks normal but val acc never moves from 0.94.**
+  Indicates LoRA params aren't actually receiving gradient (e.g.,
+  forgot to add to optimizer, or no_grad context leaking from
+  `encode()`). Kill and debug.
+- **CUDA OOM at batch 16.** Drop to batch 8 with `grad_accum_steps=2`
+  for effective batch 16. If still OOM, drop `target_blocks` from 4
+  to 2.
+
+### Out of scope
+
+- LoRA on `attn.proj` and SwiGLU MLP — defer until v1 partially
+  closes.
+- Test-time D4 logit averaging at WSI inference — orthogonal,
+  separate plan.
+- Adding `peft` as a dependency.
+
+### Status
+
+In progress. Code: `cardiac_acr/backends/uni/lora.py`,
+`cardiac_acr/backends/uni/finetune.py`, plus extensions to
+`backbone.py`, `train.py`, `classifier.py`, `config.py`. Results
+section to be appended once the run completes.
