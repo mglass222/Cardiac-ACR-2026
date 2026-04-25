@@ -272,13 +272,15 @@ def finetune(seed=0, save=True):
         else:
             epochs_since_improvement += 1
 
-        # Hard abort: val acc collapses below the warm-start floor in
-        # the first 2 epochs. Indicates LoRA LR too high or GradScaler
-        # not engaged. Better to fail fast than run 15 epochs of dead
-        # training.
-        if epoch < 2 and val_acc < 0.93:
-            print(f"\nABORT: val acc {val_acc:.4f} < 0.93 at epoch {epoch+1}. "
-                  "LR too high or GradScaler misconfigured. Killing run.")
+        # Hard abort: val acc collapses well below the warm-start
+        # floor (0.94) in the first 2 epochs. The threshold is
+        # deliberately loose (0.90, not 0.93) — a 1-pp slip is normal
+        # mid-warmup and may recover; only large drops indicate the
+        # real failure modes (LR way too high, GradScaler off, or LoRA
+        # params not in the optimizer).
+        if epoch < 2 and val_acc < 0.90:
+            print(f"\nABORT: val acc {val_acc:.4f} < 0.90 at epoch {epoch+1}. "
+                  "Likely catastrophic LR or optimizer misconfig. Killing run.")
             return None, None
 
         if epochs_since_improvement >= uni_cfg.LORA_EARLY_STOP_PATIENCE:

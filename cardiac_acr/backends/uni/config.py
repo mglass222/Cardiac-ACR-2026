@@ -101,8 +101,13 @@ LORA_DROPOUT = 0.05
 # LoRA training hyperparameters
 LORA_NUM_EPOCHS = 15
 LORA_BATCH_SIZE = 16             # 32 if memory allows; drop to 8 + grad accum if OOM
-LORA_LR = 1e-4                   # LoRA params
-LORA_HEAD_LR = 5e-5              # warm-started head: gentle
+LORA_LR = 5e-5                   # LoRA params. First trial at 1e-4 caused
+                                 # mild val-acc regression (0.94 -> 0.93) at
+                                 # half-warmup; halved on the second pass.
+LORA_HEAD_LR = 1e-5              # warm-started head: very gentle. The head
+                                 # is already at 0.94 — it needs nudging to
+                                 # absorb LoRA's residual-stream changes,
+                                 # not retraining.
 LORA_WARMUP_EPOCHS = 2
 LORA_GRAD_CLIP = 1.0             # essential at fp16
 LORA_CLASS_WEIGHT_CLIP = 5.0     # clamp class-weighted CE so the 13.3x

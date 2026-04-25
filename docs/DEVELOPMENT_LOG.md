@@ -1812,7 +1812,88 @@ direction but not a clear win. Below 0.945 is in noise band.
 
 ### Status
 
-In progress. Code: `cardiac_acr/backends/uni/lora.py`,
-`cardiac_acr/backends/uni/finetune.py`, plus extensions to
-`backbone.py`, `train.py`, `classifier.py`, `config.py`. Results
-section to be appended once the run completes.
+Code shipped (`9f4f429`, `ef442b2`). Two runs attempted; results
+below.
+
+### Results — negative
+
+**Run 1 (LoRA LR 1e-4, head LR 5e-5, abort threshold 0.93):**
+hard-aborted at epoch 1 with val acc 0.9289. Train acc rose to 0.9479
+in the same epoch (gradients flowing fine — not a misconfig), but val
+slipped 1 pp below the warm-start. The 0.93 abort threshold was tuned
+for the GradScaler-underflow failure mode (val stays flat); the
+actual failure mode was different.
+
+**Run 2 (LoRA LR 5e-5, head LR 1e-5, abort threshold 0.90):**
+ran 7 epochs before early-stopping. Best val acc reached at epoch 2
+and never recovered:
+
+| Epoch | Train loss | Train acc | Val loss | Val acc |
+|---|---|---|---|---|
+| 1 | 0.1747 | 0.9425 | 0.3059 | 0.9293 |
+| 2 | 0.1121 | 0.9588 | 0.2826 | **0.9318** |
+| 3 | 0.0926 | 0.9647 | 0.2816 | 0.9311 |
+| 4 | 0.0873 | 0.9659 | 0.2899 | 0.9304 |
+| 5 | 0.0778 | 0.9683 | 0.2995 | 0.9300 |
+| 6 | 0.0752 | 0.9702 | 0.2949 | 0.9304 |
+| 7 | 0.0621 | 0.9749 | 0.3107 | 0.9296 |
+
+Best val: **0.9318**, vs. the warm-start head's 0.9402. **LoRA
+fine-tuning made the model worse by 0.84 pp.** Train loss collapsed
+to 0.06 (memorization signature), val loss climbed monotonically
+0.28 → 0.31 across the early-stop window — classic overfitting.
+
+### Why it failed
+
+Two mutually-reinforcing constraints:
+
+1. **Tiny dataset for fine-tuning a 681M-param ViT-H.** Even with
+   only 196K trainable LoRA params, augmenting 11.7K source patches
+   with random rotation + flip + ColorJitter produces gradient signal
+   that's mostly noise relative to what UNI2-h was originally trained
+   on (200M H&E patches). The frozen base does most of the lifting
+   already; the LoRA delta has more downside (fitting to dataset-
+   specific artifacts) than upside.
+2. **The 0.94 plateau is deeper than "needs more capacity."** The
+   hypothesis was "frozen backbone is the ceiling." Result is
+   consistent with a different hypothesis: **the validation set
+   itself contains hard examples that no patch-level model
+   constrained to UNI2-h's family of representations can resolve**.
+   Both prior ablations (D4 augmentation + HP sweep) pointed in this
+   direction; this run reinforces it.
+
+### What we ship
+
+LoRA infrastructure (module, fine-tune script, checkpoint loader
+extension) is left in place — it's correct, sanity-checked, and
+useful for future experiments at higher data scale. Default behavior
+is unchanged: `train.py` still trains the head on the D4 cache and
+saves a non-LoRA checkpoint that loads through the legacy code path
+in `classifier.py`.
+
+The 0.9417 head checkpoint was restored after the LoRA run by
+re-running `train.py` (35.9 s, val acc 0.9417 — within noise of the
+prior 0.9402).
+
+### What this means for the project
+
+Across three ablations today (D4 multi-view, HP sweep, LoRA
+fine-tune), no lever has moved patch-level val acc meaningfully above
+the 0.94 plateau. The remaining moves are:
+
+1. **Re-frame the metric.** Patch-level val acc is the wrong target;
+   slide-level rejection grade (the actual deliverable) depends on
+   focus counts above threshold, not raw patch accuracy. The
+   slide-level dx for the 4 verified slides (111, 119, 135, 139) is
+   already 100% correct with the existing 0.94 model. There may be
+   no gap to close at the level we care about.
+2. **Test-time D4 logit averaging.** Cheap, orthogonal to everything
+   tried so far, expected ~0.5 pp at minimum.
+3. **More training data.** The 11.7K-patch dataset is the binding
+   constraint, not the model. Annotating more slides has higher
+   expected lift than any modeling change.
+
+LoRA fine-tune is parked. May be worth revisiting if the slide-level
+metric ever calls for it — at which point a higher LoRA dropout
+(0.2+), shorter schedule (3-5 epochs), and either rank=4 or fewer
+target blocks would be the next dial to turn.
