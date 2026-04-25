@@ -1949,3 +1949,82 @@ LoRA fine-tune is parked. May be worth revisiting if the slide-level
 metric ever calls for it — at which point a higher LoRA dropout
 (0.2+), shorter schedule (3-5 epochs), and either rank=4 or fewer
 target blocks would be the next dial to turn.
+
+---
+
+## 2026-04-24 — Schedule-length sweep (negative result)
+
+### Motivation
+
+The earlier HP sweep covered LR magnitude and weight decay with
+`HEAD_TYPE` and confirmed all configs land in 0.94 ± 0.005. One thing
+the sweep didn't probe was **schedule shape** — total length and
+warmup. Observation from the training curves: best val acc lands at
+epoch ~10 (LR still near peak), then val loss climbs through the
+remaining 40 epochs of cosine decay. Hypothesis: the 50-epoch
+schedule keeps LR too high for too long, and shortening would let the
+model consolidate at lower LR before overfitting.
+
+### Implementation
+
+In-process override of `TRAIN_NUM_EPOCHS` and
+`TRAIN_COSINE_WARMUP_EPOCHS` via `train_head(num_epochs=..., warmup_epochs=..., save=False)`.
+3 trials per config to cover the 0.005 noise floor.
+
+### Result
+
+| Schedule | Mean (3 trials) | Spread | Δ vs baseline |
+|---|---|---|---|
+| 50-epoch + 2-warmup (current default) | **0.9397** | 0.0029 | — |
+| 20-epoch + 1-warmup | 0.9379 | 0.0007 | −0.18 pp |
+| 15-epoch + 1-warmup | 0.9379 | 0.0033 | −0.18 pp |
+
+Both shortened schedules are ~0.18 pp worse than the 50-epoch
+baseline, but the difference is **within the noise band on the
+50-epoch trial spread**. Schedule shape is neutral — the model finds
+the same plateau regardless of how long we let it train.
+
+The interesting incidental finding is the tight spread on the
+20-epoch run (0.0007) vs. the 50-epoch baseline (0.0029) — the
+shorter schedule is more reproducible run-to-run, just lands in a
+slightly worse spot. This makes some sense: less time spent in the
+overfitting tail means less variance in *which* overfit point we
+land at.
+
+### Status
+
+Active config unchanged (`TRAIN_NUM_EPOCHS = 50`,
+`TRAIN_COSINE_WARMUP_EPOCHS = 2`). 50-epoch schedule retained because
+its mean is best, even if the margin is at noise.
+
+### Aggregate picture (four levers ruled out)
+
+| Lever | Result | Δ vs warm-start |
+|---|---|---|
+| D4 augmentation | +0.58 pp (single trial) | borderline at 1.2× noise |
+| HP sweep (LR × WD × head type) | flat | within noise |
+| LoRA fine-tune | overfit | **−0.84 pp** |
+| Schedule length | flat | within noise |
+
+Every model-side knob lands the same model in the same place. The
+0.94 plateau is structural — either the val set has examples that
+are genuinely hard from any UNI2-h-derived representation, or the
+patch-level metric itself is noisier than 0.94 can resolve given a
+2,743-patch val set with severe class imbalance (Hemorrhage absent
+in val).
+
+### Remaining productive directions
+
+In order of expected payoff vs. cost:
+
+1. **Test-time D4 logit averaging at WSI inference.** Orthogonal to
+   training — average the head's softmax over all 8 D4 views per
+   patch before threshold. Cheap (8× classify pass per slide) and
+   the literature suggests ~0.5–1 pp at minimum. The cleanest move
+   we haven't yet tried.
+2. **Re-frame the metric.** Slide-level rejection grade is the
+   actual deliverable; on the 4 verified slides (111, 119, 135, 139)
+   the current 0.94 model is already 100% correct. The patch-level
+   gap may not matter at the level we care about.
+3. **More annotated training data.** 11.7K patches is the binding
+   constraint, not the model.
