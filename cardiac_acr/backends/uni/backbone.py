@@ -27,7 +27,7 @@ from cardiac_acr.backends.uni import config as uni_cfg
 class UNIBackbone(nn.Module):
     """Frozen UNI2-h encoder with a convenience ``.encode()`` method."""
 
-    def __init__(self, device=None, dtype=None):
+    def __init__(self, device=None, dtype=None, compile=True):
         super().__init__()
         self.device = device or _default_device()
         self.dtype = dtype if dtype is not None else _default_autocast_dtype(self.device)
@@ -36,7 +36,10 @@ class UNIBackbone(nn.Module):
         for p in self.model.parameters():
             p.requires_grad = False
         self.model.to(self.device)
-        if self.device.type == "cuda":
+        # ``compile`` is opt-out for callers that need to mutate the
+        # module tree afterwards (e.g. injecting LoRA wrappers — the
+        # Dynamo graph cannot survive submodule replacement).
+        if compile and self.device.type == "cuda":
             self.model = torch.compile(self.model)
 
     @torch.no_grad()
