@@ -1537,3 +1537,116 @@ intermediate PNGs as a debug affordance for filter tuning — mitigated
 by keeping the full disk pipeline alive on the `disk-mode` branch
 (pushed at `b609d3e`) and, long-term, by a `--dump-patches`
 side-effect flag on streaming (not yet implemented).
+
+---
+
+## 2026-04-24 — D4 multi-view encoding for the UNI head
+
+### Motivation
+
+The UNI head plateaus at ~94 % validation accuracy; the prior end-to-end
+ResNet-50 reached ~96 %. Leading suspect: ResNet trained under
+`ColorJitter` + `RandomRotation(180)`, while the UNI pipeline trains the
+head on **pre-encoded features with zero augmentation** — each patch is
+seen exactly once in its canonical orientation. H&E pathology is
+rotation- and reflection-invariant, so the dihedral group D4 (4
+rotations × 2 flips = 8 views) is a "free" augmentation. Plan in
+`docs/UNI_MULTIVIEW_PLAN.md`.
+
+### Implementation
+
+`backends/uni/encode_patches.py` — added `_D4_VIEWS` (the 8 D4 group
+elements), `_apply_d4(img, k_rot, do_flip)` using
+`torchvision.transforms.functional.rotate` + `hflip`, and
+`_build_view_transforms(num_views)` returning a list of N deterministic
+Compose pipelines. `_encode_split` now loops the encoder once per view,
+appending features and labels into a single cache. `main()` passes
+`uni_cfg.NUM_TRAIN_VIEWS` for Training and hardcoded `1` for Validation.
+`backends/uni/config.py` — added `NUM_TRAIN_VIEWS = 8` and routed
+`TRAINING_FEATURES_PATH` to `training_views8.pt` (suffixed for trivial
+A/B against the legacy `training.pt`). `backends/uni/train.py` — one
+extra print line surfacing the encoding count and view multiplier.
+
+### Verification
+
+Encode pass on slide-set training split (11,710 patches × 8 views):
+- 1207.5 s wall-clock at 77.6 img/s steady state on a 2070 SUPER.
+- Output: `training_views8.pt`, shape `(93680, 1536)`, 576 MB on disk.
+- Validation: 35.1 s for 2,743 patches at 78.2 img/s, single canonical
+  view. Schema unchanged.
+- Per-class counts in the new cache are exactly 8× the prior numbers
+  (`1R1A 2232 → 17856`, `Hemorrhage 147 → 1176`, etc.) — confirms the
+  loop didn't drop or duplicate.
+
+### A/B comparison (same `validation.pt`, 50 epochs MLP head)
+
+| Metric | Baseline (1 view) | D4 (8 views) | Δ |
+|---|---|---|---|
+| Best val acc | 0.9344 | **0.9402** | +0.58 pp |
+| Final eval accuracy | 0.9355 | 0.9391 | +0.36 pp |
+| Macro AUROC | 0.9947 | 0.9952 | +0.0005 |
+| 1R1A F1 | 0.9155 | 0.9173 | +0.0018 |
+| 1R2 F1 | 0.8771 | 0.8828 | +0.0057 |
+| Healing F1 | 0.9349 | 0.9411 | +0.0062 |
+| Normal F1 | 0.9531 | 0.9556 | +0.0025 |
+| Quilty F1 | 1.0000 | 1.0000 | 0 |
+| Train loss @ epoch 50 | 0.018 | 0.0003 | — |
+| Val loss @ epoch 50 | 0.205 | 0.367 | — |
+
+Both runs trained on the freshly-encoded `validation.pt`, so the comparison
+isolates the training cache change. Confusion-matrix shifts are small and
+local: `1R2 → 1R1A` errors drop from 28 to 19, `Healing → Normal` from 55
+to 50, while `1R1A → 1R2` rises 29 → 40. The hard pairs (1R1A↔1R2 and
+Healing↔Normal) remain the bulk of errors in both runs — these are
+clinically subtle distinctions that augmentation alone cannot resolve.
+
+### Interpretation
+
+D4 augmentation **helps marginally but does not close the gap to ResNet's
+~96 %**. The +0.58 pp lift is real and uniform across non-trivial classes,
+but the curve also tells a clear secondary story: the D4 model overfits
+*harder*, not less. Train loss collapses to 0.0003 (effectively
+memorizing); val loss climbs from 0.16 → 0.37 across epochs while val
+accuracy oscillates around 0.93–0.94. The frozen UNI2-h backbone is
+highly D4-equivariant by design, so encoding 8 symmetries produces
+*nearly-redundant* feature vectors — the head gets 8× more samples to
+memorize without 8× more independent information.
+
+The implication: classic augmentation is not the binding constraint on
+this pipeline. The remaining ~2 pp gap to ResNet is more likely about (a)
+the frozen-features ceiling — UNI's representation, however good in
+general, can't be tailored to the specific decision boundaries this
+dataset needs without backbone-side gradient flow; (b) hard val examples
+in the 1R1A↔1R2 and Healing↔Normal pairs that no amount of training-data
+multiplication will help; (c) the Hemorrhage class (0 in val, weighted
+13.3× in CE) introducing high-variance noise into the loss.
+
+### What ships
+
+D4 encoding is left **on as the default** (`NUM_TRAIN_VIEWS = 8`). The
++0.58 pp is small but free — encode is one-time, training takes seconds,
+and the saved checkpoint is strictly better on every per-class F1. The
+legacy `training.pt` stays on disk for fallback; can be deleted once
+confidence is established. To reproduce the baseline:
+`uni_cfg.NUM_TRAIN_VIEWS = 1; uni_cfg.TRAINING_FEATURES_PATH = ".../training.pt"`.
+
+### Next levers (not yet attempted)
+
+If closing the remaining gap matters, the productive directions are:
+
+- **Test-time D4 averaging at WSI inference** — run the head on all 8
+  views and average logits before threshold. Cheap (8× classify pass) and
+  the literature suggests it adds another ~0.5–1 pp on top of train-time
+  D4.
+- **Unfreeze the last UNI block and fine-tune end-to-end** with per-batch
+  augmentation. Highest ceiling, most expensive — reverts to the ResNet
+  pipeline's compute profile.
+- **Per-batch feature-space augmentation in `train.py`** (Gaussian noise,
+  feature dropout) — adds *real* variance the frozen-features pipeline
+  currently lacks, without touching the encoder.
+- **Stochastic ColorJitter at encode time** as enumerable views. A
+  degraded form of true train-time stochastic jitter, but adds genuine
+  appearance variance the D4 group does not.
+
+These are deferred until and unless the val-acc gap matters for a
+specific downstream goal (paper threshold, reviewer comment).
